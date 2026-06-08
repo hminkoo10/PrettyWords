@@ -1,4 +1,4 @@
-# PrettyWords Server Setup
+# PrettyWords 서버 세팅
 
 Oracle Cloud A1 Flex 같은 ARM Linux 서버에서 PrettyWords를 실행하는 방법입니다.
 
@@ -99,15 +99,15 @@ ENABLE_MEMBERS_INTENT=false
 1. Discord Developer Portal에서 Application 생성
 2. Bot 생성 후 token을 `.env`의 `DISCORD_TOKEN`에 입력
 3. Bot 탭에서 `Message Content Intent` 켜기
-4. OAuth2 URL Generator에서 scope:
+4. OAuth2 URL Generator에서 범위(scope):
    - `bot`
    - `applications.commands`
-5. Bot permissions:
-   - `View Channels`
-   - `Send Messages`
-   - `Manage Messages`
-   - `Moderate Members`
-   - `Use Slash Commands`
+5. 봇 권한(Bot permissions):
+   - 채널 보기 (`View Channels`)
+   - 메시지 보내기 (`Send Messages`)
+   - 메시지 관리 (`Manage Messages`)
+   - 멤버 제재 (`Moderate Members`)
+   - 슬래시 명령어 사용 (`Use Slash Commands`)
 6. 봇 역할을 제재 대상 역할보다 위로 이동
 
 ## 7. 수동 실행 테스트
@@ -123,12 +123,27 @@ Discord 서버에서:
 ```text
 /filter status
 /filter log-channel channel:#moderation-log
+/filter health-log-channel channel:#bot-health
 /filter health
 /filter timeout minutes:10
 /pw config-admin-add user_id:123456789012345678
 ```
 
-`/filter log-channel`을 설정하면 10분마다 health summary가 로그 채널에 전송됩니다. 너무 많으면 `/filter health-log enabled:false`로 끌 수 있습니다.
+`/filter health-log-channel`을 설정하면 10분마다 상태 요약이 해당 채널에 전송됩니다. 상태 로그 채널을 따로 지정하지 않으면 기존 제재 로그 채널로 전송됩니다. 너무 많으면 `/filter health-log enabled:false`로 끌 수 있습니다.
+
+카테고리 학습 예시:
+
+```text
+/filter add-word term:... category:family_insult severity:3
+/filter learn-message message_id:123456789012345678 term:... category:sexual severity:2 channel:#general
+```
+
+오탐 이의제기는 사용자가 `/filter report`로 열고, 봇 설정 관리자가 승인해야 학습됩니다.
+
+```text
+/filter report case_id:12 reason:오탐입니다
+/filter resolve-report report_id:3 outcome:false_positive
+```
 
 문제 없으면 `Ctrl+C`로 중지하고 systemd 서비스로 등록합니다.
 
@@ -142,7 +157,7 @@ sudo nano /etc/systemd/system/prettywords.service
 
 ```ini
 [Unit]
-Description=PrettyWords Discord moderation bot
+Description=PrettyWords Discord 검열 봇
 After=network-online.target ollama.service
 Wants=network-online.target
 
