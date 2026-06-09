@@ -20,7 +20,6 @@ class GuildSettings:
     guild_id: int
     paused: bool = False
     log_channel_id: int | None = None
-    health_log_channel_id: int | None = None
     timeout_minutes: int = 10
     confidence_threshold: float = 0.78
     delete_messages: bool = True
@@ -80,7 +79,6 @@ class ModerationStore:
                     guild_id INTEGER PRIMARY KEY,
                     paused INTEGER NOT NULL DEFAULT 0,
                     log_channel_id INTEGER,
-                    health_log_channel_id INTEGER,
                     timeout_minutes INTEGER NOT NULL DEFAULT 10,
                     confidence_threshold REAL NOT NULL DEFAULT 0.78,
                     delete_messages INTEGER NOT NULL DEFAULT 1,
@@ -106,7 +104,6 @@ class ModerationStore:
                     guild_id INTEGER NOT NULL,
                     term TEXT NOT NULL,
                     severity INTEGER NOT NULL DEFAULT 2,
-                    category TEXT NOT NULL DEFAULT 'profanity',
                     notes TEXT NOT NULL DEFAULT '',
                     added_by INTEGER NOT NULL,
                     added_at TEXT NOT NULL,
@@ -190,19 +187,15 @@ class ModerationStore:
                     source_id INTEGER,
                     content TEXT NOT NULL,
                     term TEXT,
-                    category TEXT NOT NULL DEFAULT '',
                     created_by INTEGER,
                     created_at TEXT NOT NULL
                 );
                 """
             )
-            self._ensure_column(conn, "guild_settings", "health_log_channel_id", "INTEGER")
             self._ensure_column(conn, "guild_settings", "ai_provider", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "guild_settings", "ai_model", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "guild_settings", "ai_scan_all", "INTEGER")
             self._ensure_column(conn, "guild_settings", "health_log_enabled", "INTEGER NOT NULL DEFAULT 1")
-            self._ensure_column(conn, "blocked_terms", "category", "TEXT NOT NULL DEFAULT 'profanity'")
-            self._ensure_column(conn, "learning_events", "category", "TEXT NOT NULL DEFAULT ''")
             conn.commit()
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -224,7 +217,6 @@ class ModerationStore:
         allowed = {
             "paused",
             "log_channel_id",
-            "health_log_channel_id",
             "timeout_minutes",
             "confidence_threshold",
             "delete_messages",
@@ -257,7 +249,6 @@ class ModerationStore:
             guild_id=int(row["guild_id"]),
             paused=bool(row["paused"]),
             log_channel_id=row["log_channel_id"],
-            health_log_channel_id=row["health_log_channel_id"],
             timeout_minutes=int(row["timeout_minutes"]),
             confidence_threshold=float(row["confidence_threshold"]),
             delete_messages=bool(row["delete_messages"]),
@@ -320,25 +311,16 @@ class ModerationStore:
         severity: int,
         added_by: int,
         notes: str = "",
-        category: str = "profanity",
     ) -> None:
         conn = self._require_conn()
         async with self._lock:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO blocked_terms
-                (guild_id, term, severity, category, notes, added_by, added_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (guild_id, term, severity, notes, added_by, added_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    guild_id,
-                    term.strip(),
-                    max(1, min(3, severity)),
-                    category[:64],
-                    notes[:300],
-                    added_by,
-                    utc_now_iso(),
-                ),
+                (guild_id, term.strip(), max(1, min(3, severity)), notes[:300], added_by, utc_now_iso()),
             )
             conn.commit()
 
@@ -356,13 +338,10 @@ class ModerationStore:
         conn = self._require_conn()
         async with self._lock:
             rows = conn.execute(
-                "SELECT term, severity, notes, category FROM blocked_terms WHERE guild_id = ? ORDER BY term",
+                "SELECT term, severity, notes FROM blocked_terms WHERE guild_id = ? ORDER BY term",
                 (guild_id,),
             ).fetchall()
-        return [
-            ModerationTerm(row["term"], int(row["severity"]), row["notes"], row["category"] or "profanity")
-            for row in rows
-        ]
+        return [ModerationTerm(row["term"], int(row["severity"]), row["notes"]) for row in rows]
 
     async def add_allowed_term(self, guild_id: int, term: str, added_by: int) -> None:
         conn = self._require_conn()
@@ -643,7 +622,6 @@ class ModerationStore:
         content: str,
         source_id: int | None = None,
         term: str | None = None,
-        category: str | None = None,
         created_by: int | None = None,
     ) -> None:
         conn = self._require_conn()
@@ -651,8 +629,8 @@ class ModerationStore:
             conn.execute(
                 """
                 INSERT INTO learning_events
-                (guild_id, label, source_type, source_id, content, term, category, created_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (guild_id, label, source_type, source_id, content, term, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     guild_id,
@@ -661,7 +639,6 @@ class ModerationStore:
                     source_id,
                     content[:1200],
                     term,
-                    category or "",
                     created_by,
                     utc_now_iso(),
                 ),
@@ -673,20 +650,11 @@ class ModerationStore:
         async with self._lock:
             rows = conn.execute(
                 """
-                SELECT content, term, category FROM learning_events
+                SELECT content FROM learning_events
                 WHERE guild_id = ? AND label = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
                 (guild_id, label, limit),
             ).fetchall()
-        examples: list[str] = []
-        for row in rows:
-            tags = []
-            if row["category"]:
-                tags.append(f"category={row['category']}")
-            if row["term"]:
-                tags.append(f"term={row['term']}")
-            prefix = f"[{' '.join(tags)}] " if tags else ""
-            examples.append(f"{prefix}{row['content']}")
-        return examples
+        return [row["content"] for row in rows]
