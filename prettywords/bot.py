@@ -12,7 +12,7 @@ from discord.ext import commands, tasks
 
 from .ai import AIContext, GroqClassifier, OllamaClassifier, OpenAIClassifier, RateLimitedError
 from .config import BotConfig, load_config
-from .filtering import LocalClassifier, ModerationDecision, combine_decisions, message_fingerprint
+from .filtering import DEFAULT_BLOCKED_TERMS, LocalClassifier, ModerationDecision, combine_decisions, message_fingerprint
 from .storage import GuildSettings, ModerationStore
 
 
@@ -723,10 +723,63 @@ class ModerationCog(commands.Cog):
                 content=message.content,
                 created_by=self.bot.user.id if self.bot.user else None,
             )
+            await self._auto_register_terms(message.guild.id, decision, infraction_id)
 
         await self._log_infraction(message, infraction_id, decision, action, timeout_minutes, settings)
         if settings.dm_users and not settings.dry_run:
             await self._dm_warning(message.author, infraction_id, timeout_minutes, decision.reason)
+
+    async def _auto_register_terms(
+        self,
+        guild_id: int,
+        decision: ModerationDecision,
+        infraction_id: int,
+    ) -> None:
+        """AI가 confidence ≥ 0.9로 잡은 matched_terms를 서버 차단어에 자동 등록.
+
+        기본 차단어(DEFAULT_BLOCKED_TERMS)나 이미 등록된 서버 차단어는 건너뜁니다.
+        """
+        if not decision.matched_terms:
+            return
+
+        default_terms = {term.lower() for term, _ in DEFAULT_BLOCKED_TERMS}
+        existing = {t.term.lower() for t in await self.bot.store.list_blocked_terms(guild_id)}
+
+        added: list[str] = []
+        for raw_term in decision.matched_terms:
+            term = raw_term.strip()
+            if not term or len(term) < 2:
+                continue
+            if term.lower() in default_terms or term.lower() in existing:
+                continue
+            severity = min(3, max(1, decision.severity))
+            await self.bot.store.add_blocked_term(
+                guild_id,
+                term,
+                severity,
+                added_by=self.bot.user.id or 0,
+                notes=f"auto from infraction #{infraction_id} (conf={decision.confidence:.2f})",
+            )
+            await self.bot.store.add_learning_event(
+                guild_id=guild_id,
+                label="confirmed_bad",
+                source_type="infraction",
+                source_id=infraction_id,
+                content=term,
+                term=term,
+                created_by=self.bot.user.id if self.bot.user else None,
+            )
+            existing.add(term.lower())
+            added.append(term)
+
+        if added:
+            LOGGER.info(
+                "[guild:%d] auto-registered %d term(s) from infraction #%d: %s",
+                guild_id,
+                len(added),
+                infraction_id,
+                added,
+            )
 
     def _effective_timeout(self, settings: GuildSettings, recent_count: int) -> int:
         base = max(0, min(MAX_TIMEOUT_MINUTES, settings.timeout_minutes))
