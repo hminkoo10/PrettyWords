@@ -398,7 +398,8 @@ class ModerationCog(commands.Cog):
 
         blocked_terms = await self.bot.store.list_blocked_terms(message.guild.id)
         allowed_terms = await self.bot.store.list_allowed_terms(message.guild.id)
-        local = self.bot.local_classifier.classify(message.content, blocked_terms, allowed_terms)
+        scan_content = self._mask_member_names(message)
+        local = self.bot.local_classifier.classify(scan_content, blocked_terms, allowed_terms)
 
         LOGGER.debug(
             "[%s] local: violation=%s conf=%.2f matched=%s",
@@ -780,6 +781,44 @@ class ModerationCog(commands.Cog):
                 infraction_id,
                 added,
             )
+
+    def _mask_member_names(self, message: discord.Message) -> str:
+        """로컬 필터 검사 전에 메시지 내 멤버 이름을 공백으로 치환.
+
+        서버 멤버의 username/닉네임/display_name이 차단어를 포함하더라도
+        해당 이름이 메시지에 등장할 때 오탐이 나지 않도록 마스킹합니다.
+        members intent 없이도 discord.py 캐시에 있는 멤버는 모두 처리합니다.
+        """
+        import re as _re
+
+        # 메시지 참여자(작성자 + 멘션) + 캐시된 서버 전체 멤버
+        members: list[discord.abc.User] = list(message.mentions) + [message.author]
+        if message.guild:
+            members = list(message.guild.members) or members
+
+        names: set[str] = set()
+        for member in members:
+            for attr in ("display_name", "global_name", "name"):
+                val = getattr(member, attr, None)
+                if val and len(val) >= 2:
+                    names.add(val)
+
+        if not names:
+            return message.content
+
+        # 긴 이름부터 먼저 치환 (부분 치환 오류 방지)
+        result = message.content
+        for name in sorted(names, key=len, reverse=True):
+            result = _re.sub(_re.escape(name), " ", result, flags=_re.IGNORECASE)
+
+        if result != message.content:
+            LOGGER.debug(
+                "[%s] name-masked content for local filter: %.80r → %.80r",
+                message.guild.name if message.guild else "?",
+                message.content,
+                result,
+            )
+        return result
 
     def _effective_timeout(self, settings: GuildSettings, recent_count: int) -> int:
         base = max(0, min(MAX_TIMEOUT_MINUTES, settings.timeout_minutes))
